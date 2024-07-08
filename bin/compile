@@ -1,38 +1,53 @@
 #!/usr/bin/env bash
-echo "[M-Install] 'python -m playwright install 16:57'"
-export PLAYWRIGHT_BUILDPACK_BROWSERS="${PLAYWRIGHT_BUILDPACK_BROWSERS:-firefox}"
-python "$PWD/bin/install_playwright_browser.py"
+
 set -e
 
 BUILD_DIR=$1
 CACHE_DIR=$2
 ENV_DIR=$3
-BP_DIR=`cd $(dirname $0); cd ..; pwd`
+BP_DIR=$(cd "$(dirname "$0")"; cd ..; pwd)
+
+log_message() {
+  local message=$1
+  echo "[M-Install] '$message' at $(date +'%Y-%m-%d %H:%M:%S')"
+}
 
 error() {
-	echo " !     $*" >&2
-	exit 1
+  echo " !     $*" >&2
+  exit 1
 }
 
 topic() {
-	echo "-----> $*"
+  echo "-----> $*"
+}
+
+# Ensure PLAYWRIGHT_BUILDPACK_BROWSERS is set, default to Firefox if not set
+if [ -z "$PLAYWRIGHT_BUILDPACK_BROWSERS" ]; then
+  export PLAYWRIGHT_BUILDPACK_BROWSERS="firefox"
+fi
+
+install_playwright_browsers() {
+  log_message "python -m playwright install"
+  if ! python "$PWD/bin/install_playwright_browser.py"; then
+    error "Failed to install Playwright browsers"
+  fi
 }
 
 install_system_deps() {
-	topic "Installing System Dependencies"
+  topic "Installing System Dependencies"
 
-	APT_BUILDPACK="https://github.com/heroku/heroku-buildpack-apt"
-	local buildpack_tmpdir=$(mktemp -d)
-	cd $buildpack_tmpdir && git clone $APT_BUILDPACK .
+  APT_BUILDPACK="https://github.com/heroku/heroku-buildpack-apt"
+  local buildpack_tmpdir=$(mktemp -d)
+  git clone $APT_BUILDPACK $buildpack_tmpdir
 
-	local build_tmpdir=$(mktemp -d)
-	mkdir -p $build_tmpdir
+  local build_tmpdir=$(mktemp -d)
+  mkdir -p $build_tmpdir
 
-	SUPPORTED_BROWSERS=${PLAYWRIGHT_BUILDPACK_BROWSERS:-chromium,firefox,webkit}
-	echo "Installing Playwright dependencies (env: PLAYWRIGHT_BUILDPACK_BROWSERS) for $SUPPORTED_BROWSERS."
+  SUPPORTED_BROWSERS=${PLAYWRIGHT_BUILDPACK_BROWSERS:-chromium,firefox,webkit}
+  echo "Installing Playwright dependencies (env: PLAYWRIGHT_BUILDPACK_BROWSERS) for $SUPPORTED_BROWSERS."
 
-	if [[ "$SUPPORTED_BROWSERS" == *"chromium"* ]]; then
-		cat << EOF >>$build_tmpdir/Aptfile
+  if [[ "$SUPPORTED_BROWSERS" == *"chromium"* ]]; then
+    cat << EOF >>$build_tmpdir/Aptfile
 # Chromium dependencies
 libnss3
 libxss1
@@ -45,10 +60,10 @@ libxrandr2
 libatspi2.0-0
 libxshmfence-dev
 EOF
-	fi
+  fi
 
-	if [[ "$SUPPORTED_BROWSERS" == *"firefox"* ]]; then
-		cat << EOF >>$build_tmpdir/Aptfile
+  if [[ "$SUPPORTED_BROWSERS" == *"firefox"* ]]; then
+    cat << EOF >>$build_tmpdir/Aptfile
 # Firefox dependencies
 libdbus-glib-1-2
 libxt6
@@ -59,10 +74,10 @@ libxcursor1
 libxi6
 libasound2
 EOF
-	fi
+  fi
 
-	if [[ "$SUPPORTED_BROWSERS" == *"firefox"* || "$SUPPORTED_BROWSERS" == *"chromium"* ]]; then
-		cat << EOF >>$build_tmpdir/Aptfile
+  if [[ "$SUPPORTED_BROWSERS" == *"firefox"* || "$SUPPORTED_BROWSERS" == *"chromium"* ]]; then
+    cat << EOF >>$build_tmpdir/Aptfile
 # Needed by Firefox and Chromium
 libgdk-pixbuf2.0-0
 libcairo-gobject2
@@ -74,53 +89,50 @@ libxdamage1
 libxfixes3
 libgtk-3-0
 EOF
-	fi
+  fi
 
-	case "$STACK" in
-	  "heroku-20")
-	    cat << EOF >>$build_tmpdir/Aptfile
+  case "$STACK" in
+    "heroku-20")
+      cat << EOF >>$build_tmpdir/Aptfile
 libvpx6
 EOF
-	    ;;
-	  "heroku-22")
-	    cat << EOF >>$build_tmpdir/Aptfile
+      ;;
+    "heroku-22")
+      cat << EOF >>$build_tmpdir/Aptfile
 libvpx7
 EOF
-	    ;;
-	  *)
-	    error "STACK must be 'heroku-20' or 'heroku-22'"
-	esac
+      ;;
+    *)
+      rm -rf $buildpack_tmpdir $build_tmpdir $cache_tmpdir
+      error "STACK must be 'heroku-20' or 'heroku-22'"
+  esac
 
-	local cache_tmpdir=$(mktemp -d)
+  local cache_tmpdir=$(mktemp -d)
 
-	HOME=/app $buildpack_tmpdir/bin/compile $build_tmpdir $cache_tmpdir
-	if [ $? -ne 0 ]; then
-		rm -rf $buildpack_tmpdir $build_tmpdir $cache_tmpdir
-		error "Could not install dependencies"
-	fi
-	mv $build_tmpdir/.apt $BUILD_DIR
-	# mv file in case user is using .profile.d
-	mkdir -p $BUILD_DIR/.profile.d/
-	mv $build_tmpdir/.profile.d/000_apt.sh $BUILD_DIR/.profile.d/
+  HOME=/app $buildpack_tmpdir/bin/compile $build_tmpdir $cache_tmpdir
+  if [ $? -ne 0 ]; then
+    rm -rf $buildpack_tmpdir $build_tmpdir $cache_tmpdir
+    error "Could not install dependencies"
+  fi
+  mv $build_tmpdir/.apt $BUILD_DIR
+  mkdir -p $BUILD_DIR/.profile.d/
+  mv $build_tmpdir/.profile.d/000_apt.sh $BUILD_DIR/.profile.d/
 
-	rm -rf $buildpack_tmpdir $build_tmpdir $cache_tmpdir
+  rm -rf $buildpack_tmpdir $build_tmpdir $cache_tmpdir
 }
 
 configure_export_env() {
-    topic "Writing profile script"
-    mkdir -p $BUILD_DIR/.profile.d
-    cat << EOF >$BUILD_DIR/.profile.d/001_playwright.sh
+  topic "Writing profile script"
+  mkdir -p $BUILD_DIR/.profile.d
+  cat << EOF >$BUILD_DIR/.profile.d/001_playwright.sh
 export PLAYWRIGHT_BROWSERS_PATH=0
-# They are not referenced correctly for ffmpeg
 export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/app/.apt/usr/lib/x86_64-linux-gnu/pulseaudio/:/app/.apt/lib/x86_64-linux-gnu/
 EOF
 
-    # Give environment variable to other buildpacks
-    echo "export PLAYWRIGHT_BROWSERS_PATH=0" >> "$BP_DIR/export"
-    export PLAYWRIGHT_BROWSERS_PATH=0
+  echo "export PLAYWRIGHT_BROWSERS_PATH=0" >> "$BP_DIR/export"
+  export PLAYWRIGHT_BROWSERS_PATH=0
 }
 
-# See here as a reference: https://devcenter.heroku.com/articles/buildpack-api#bin-compile
 export_env_dir() {
   env_dir=$1
   acceptlist_regex=${2:-''}
@@ -129,11 +141,11 @@ export_env_dir() {
     for e in $(ls $env_dir); do
       echo "$e" | grep -E "$acceptlist_regex" | grep -qvE "$denylist_regex" &&
       export "$e=$(cat $env_dir/$e)"
-      :
     done
   fi
 }
 
 export_env_dir "$ENV_DIR" PLAYWRIGHT_BUILDPACK_BROWSERS
+install_playwright_browsers
 install_system_deps
 configure_export_env
